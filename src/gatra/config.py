@@ -24,6 +24,7 @@ class DataConfig:
     doc_separator: str = "\n"
     mix: dict[str, float] = field(default_factory=dict)
     mix_spark: dict[str, float] = field(default_factory=dict)
+    mix_long: dict[str, float] = field(default_factory=dict)
 
     def sources(self) -> list[str]:
         if self.paths:
@@ -31,8 +32,8 @@ class DataConfig:
         return [self.path] if self.path else []
 
     def validate_mix(self, profile: str = "mix") -> dict[str, float]:
-        """Mix weights (from [data.mix] / [data.mix_spark]) must sum to 1.0."""
-        weights = self.mix if profile == "mix" else self.mix_spark
+        """Mix weights (from [data.mix] / [data.mix_spark] / [data.mix_long]) must sum to 1.0."""
+        weights = {"mix": self.mix, "mix_spark": self.mix_spark, "mix_long": self.mix_long}[profile]
         if not weights:
             return {}
         total = sum(weights.values())

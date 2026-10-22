@@ -123,3 +123,6 @@ def test_mix_weights_load_from_gatra_300m_toml() -> None:
     }
     spark = config.data.validate_mix("mix_spark")
     assert abs(sum(spark.values()) - 1.0) < 1e-9
+    long = config.data.validate_mix("mix_long")
+    assert abs(sum(long.values()) - 1.0) < 1e-9
+    assert set(long) == {"id_law_long", "id_web", "en_long", "code", "math"}

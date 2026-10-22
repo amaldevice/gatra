@@ -24,6 +24,17 @@ math = 0.12
 synthetic = 0.07
 instruction = 0.01
 
+# T6 extension-phase mix (8K ~80B + 16K ~20B = ~100B): long-doc heavy, ID-law anchor.
+# Sources: id_law_long <- ipfs_indonesia_laws + ID_REG + indonesia-regulation (T6 verified);
+# en_long <- EN long-docs/books fallback; id_web/en/code/math <- long-tail slices of bulk sources.
+# Epoch-audited at build (hard-fail >4.0 per source); fallback: short-doc packing + EN-long.
+[data.mix_long]
+id_law_long = 0.35
+id_web = 0.10
+en_long = 0.35
+code = 0.10
+math = 0.10
+
 [model]
 n_embd = 960
 n_head = 15
@@ -31,8 +42,11 @@ n_kv_heads = 3
 n_layer = 28
 n_ff = 2560
 block_size = 4096
+# T6 curriculum (locked): 2048 bulk ~2.6T -> 4096 ~300B -> 8K ~80B -> 16K ~20B (=3.0T).
+# block_size here = training maximum (16K phase); bulk phases use shorter seq via loader.
+# RoPE buffer must be sized to max 16384 from step-0 (T3 amendment per T6).
 dropout = 0.0
-rope_base = 100000.0
+rope_base = 500000.0  # T6 amendment: theta 500k from step-0, fixed (16K-ready, no retune)
 norm_eps = 0.000001
 vocab_size = 32768
 use_qk_norm = true
