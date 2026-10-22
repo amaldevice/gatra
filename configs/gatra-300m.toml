@@ -1,0 +1,41 @@
+name = "gatra-300m"
+seed = 1337
+device = "auto"
+
+[data]
+path = "data/sample.jsonl"
+val_ratio = 0.1
+
+[model]
+n_embd = 960
+n_head = 15
+n_kv_heads = 3
+n_layer = 28
+n_ff = 2560
+block_size = 4096
+dropout = 0.0
+rope_base = 100000.0
+norm_eps = 0.000001
+vocab_size = 32768
+use_qk_norm = true
+z_loss_coef = 0.0
+
+[train]
+batch_size = 32
+max_iters = 50000
+eval_interval = 500
+eval_iters = 50
+learning_rate = 3e-4
+warmup_iters = 1000
+weight_decay = 0.1
+grad_clip = 1.0
+out_dir = "checkpoints"
+sample_tokens = 80
+sample_prompt_chars = 24
+sample_count = 4
+
+[generate]
+max_new_tokens = 256
+temperature = 0.8
+top_k = 50
+top_p = 0.9

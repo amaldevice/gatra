@@ -49,20 +49,55 @@ class Attention(nn.Module):
     def __init__(self, config: ModelConfig) -> None:
         super().__init__()
         self.n_head = config.n_head
+        self.n_kv_heads = config.n_kv_heads
+        self.n_rep = self.n_head // self.n_kv_heads
         self.head_dim = config.n_embd // config.n_head
         self.dropout = config.dropout
-        self.qkv = nn.Linear(config.n_embd, 3 * config.n_embd, bias=False)
-        self.proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        self.attn_logit_cap = config.attn_logit_cap
+        self.q_proj = nn.Linear(config.n_embd, self.n_head * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(config.n_embd, self.n_kv_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(config.n_embd, self.n_kv_heads * self.head_dim, bias=False)
+        self.o_proj = nn.Linear(config.n_embd, config.n_embd, bias=False)
+        if config.use_qk_norm:
+            self.q_norm = RMSNorm(self.head_dim, config.norm_eps)
+            self.k_norm = RMSNorm(self.head_dim, config.norm_eps)
+        else:
+            self.q_norm = None
+            self.k_norm = None
 
     def forward(self, x: torch.Tensor, cos: torch.Tensor, sin: torch.Tensor) -> torch.Tensor:
         batch, seq, dim = x.shape
-        qkv = self.qkv(x).view(batch, seq, 3, self.n_head, self.head_dim)
-        q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(0)
+        q = self.q_proj(x).view(batch, seq, self.n_head, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(batch, seq, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(batch, seq, self.n_kv_heads, self.head_dim).transpose(1, 2)
+        if self.q_norm is not None:
+            q = self.q_norm(q)
+            k = self.k_norm(k)
         q, k = apply_rotary(q, cos, sin), apply_rotary(k, cos, sin)
+        if self.n_rep > 1:
+            k = k.repeat_interleave(self.n_rep, dim=1)
+            v = v.repeat_interleave(self.n_rep, dim=1)
         dropout_p = self.dropout if self.training else 0.0
-        out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True)
+        if self.attn_logit_cap is not None:
+            out = self._capped_attention(q, k, v, dropout_p)
+        else:
+            out = F.scaled_dot_product_attention(q, k, v, dropout_p=dropout_p, is_causal=True)
         out = out.transpose(1, 2).contiguous().view(batch, seq, dim)
-        return self.proj(out)
+        return self.o_proj(out)
+
+    def _capped_attention(
+        self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, dropout_p: float
+    ) -> torch.Tensor:
+        scores = q @ k.transpose(-2, -1) / math.sqrt(self.head_dim)
+        cap = self.attn_logit_cap
+        scores = cap * torch.tanh(scores / cap)
+        causal = torch.ones(
+            scores.shape[-2], scores.shape[-1], device=scores.device, dtype=torch.bool
+        ).tril()
+        scores = scores.masked_fill(~causal, float("-inf"))
+        weights = torch.softmax(scores.float(), dim=-1).type_as(q)
+        weights = F.dropout(weights, p=dropout_p, training=self.training)
+        return weights @ v
 
 
 class SwiGLU(nn.Module):
@@ -104,7 +139,7 @@ class Gatra(nn.Module):
         self.drop = nn.Dropout(config.dropout)
         self.apply(self._init_weights)
         for name, param in self.named_parameters():
-            if name.endswith("proj.weight") or name.endswith("w2.weight"):
+            if name.endswith(("o_proj.weight", "w2.weight")):
                 nn.init.normal_(param, mean=0.0, std=0.02 / math.sqrt(2 * config.n_layer))
 
     def _init_weights(self, module: nn.Module) -> None:
@@ -127,6 +162,9 @@ class Gatra(nn.Module):
         loss = None
         if targets is not None:
             loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1))
+            if self.config.z_loss_coef:
+                log_z = torch.logsumexp(logits.float(), dim=-1)
+                loss = loss + self.config.z_loss_coef * (log_z**2).mean()
         return logits, loss
 
     @torch.no_grad()
