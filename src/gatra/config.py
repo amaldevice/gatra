@@ -67,6 +67,23 @@ class TrainConfig:
     sample_prompt_chars: int = 24
     sample_count: int = 4
     sample_every: int = 0
+    schedule: str = "cosine"
+    warmup_tokens: int = 0
+    total_tokens: int = 0
+    decay_frac: float = 0.2
+    min_lr: float = 0.0
+    global_tokens: int = 0
+    micro_batch_seqs: int = 0
+    accum_steps: int = 0
+    bf16: bool = False
+    ddp: bool = False
+    fp16_fallback: bool = True
+
+    def __post_init__(self) -> None:
+        if self.schedule not in ("cosine", "wsd"):
+            raise ValueError("schedule must be 'cosine' or 'wsd'")
+        if self.decay_frac < 0.0 or self.decay_frac > 1.0:
+            raise ValueError("decay_frac must be in [0, 1]")
 
 
 @dataclass

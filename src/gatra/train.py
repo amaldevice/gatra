@@ -39,6 +39,54 @@ def cosine_lr(step: int, config: Config) -> float:
     return min_lr + 0.5 * (1.0 + math.cos(math.pi * progress)) * (max_lr - min_lr)
 
 
+def wsd_planned_tokens(config: Config, world_size: int = 1) -> int:
+    if config.train.total_tokens > 0:
+        return config.train.total_tokens
+    return resolve_accum_steps(config, world_size) * micro_tokens(config, world_size) * config.train.max_iters
+
+
+def micro_tokens(config: Config, world_size: int = 1) -> int:
+    seqs = config.train.micro_batch_seqs or config.train.batch_size
+    return seqs * config.model.block_size * world_size
+
+
+def resolve_accum_steps(config: Config, world_size: int = 1) -> int:
+    if config.train.accum_steps > 0:
+        return config.train.accum_steps
+    if config.train.global_tokens <= 0:
+        return 1
+    denom = micro_tokens(config, world_size)
+    if config.train.global_tokens % denom != 0:
+        raise ValueError(
+            f"global_tokens {config.train.global_tokens} not divisible by "
+            f"micro tokens {denom} (micro_batch_seqs x block_size x world_size)"
+        )
+    return config.train.global_tokens // denom
+
+
+def wsd_lr(tokens_seen: int, config: Config, world_size: int = 1) -> float:
+    peak = config.train.learning_rate
+    floor = config.train.min_lr
+    warmup = max(config.train.warmup_tokens, 0)
+    if warmup > 0 and tokens_seen < warmup:
+        return peak * tokens_seen / warmup
+    planned = wsd_planned_tokens(config, world_size)
+    decay_tokens = int(planned * config.train.decay_frac)
+    decay_start = planned - decay_tokens
+    if decay_tokens <= 0 or tokens_seen <= decay_start:
+        return peak
+    if tokens_seen >= planned:
+        return floor
+    frac = (tokens_seen - decay_start) / decay_tokens
+    return floor + (peak - floor) * (1.0 - frac)
+
+
+def current_lr(step: int, tokens_seen: int, config: Config, world_size: int = 1) -> float:
+    if config.train.schedule == "wsd":
+        return wsd_lr(tokens_seen, config, world_size)
+    return cosine_lr(step, config)
+
+
 def sample_prompt(dataset: TokenDataset, n_chars: int) -> str:
     texts = [text.strip() for text in dataset.texts if text.strip()]
     if not texts:
