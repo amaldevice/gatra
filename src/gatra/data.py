@@ -2,13 +2,18 @@ from __future__ import annotations
 
 import json
 import random
+import warnings
 from collections import defaultdict
 from pathlib import Path
 
+import numpy as np
 import torch
 
 from gatra.config import Config
-from gatra.tokenizer import ByteTokenizer
+from gatra.tokenizer import BPETokenizer, ByteTokenizer
+
+EPOCH_CAP = 4.0
+BINS_DTYPE = np.uint16
 
 
 def resolve_data_files(config: Config) -> list[Path]:
@@ -61,7 +66,7 @@ def load_corpus(config: Config) -> tuple[list[str], dict[str, int]]:
 
 
 class TokenDataset:
-    def __init__(self, config: Config, tokenizer: ByteTokenizer | None = None) -> None:
+    def __init__(self, config: Config, tokenizer: ByteTokenizer | BPETokenizer | None = None) -> None:
         self.config = config
         self.tokenizer = tokenizer or ByteTokenizer()
         self.texts, self.source_counts = load_corpus(config)
@@ -84,3 +89,71 @@ class TokenDataset:
         x = torch.stack([source[i : i + block] for i in ix])
         y = torch.stack([source[i + 1 : i + block + 1] for i in ix])
         return x.to(device), y.to(device)
+
+
+def check_epoch_cap(source_stats: dict[str, dict[str, float]]) -> dict[str, float]:
+    """Per-source epoch counter. HARD FAILS the build if any source >4.0 epochs."""
+    epochs: dict[str, float] = {}
+    for name, stats in source_stats.items():
+        unique = float(stats["unique_tokens"])
+        epoch = float(stats["train_tokens"]) / unique if unique > 0 else float("inf")
+        epochs[name] = epoch
+        if epoch > EPOCH_CAP:
+            raise ValueError(
+                f"epoch cap exceeded for source {name!r}: {epoch:.2f} > {EPOCH_CAP} "
+                f"(train_tokens={stats['train_tokens']}, unique_tokens={stats['unique_tokens']})"
+            )
+    return epochs
+
+
+def build_bins(
+    files: list[Path],
+    out_dir: Path,
+    tokenizer: BPETokenizer,
+    name: str = "gatra-300m",
+) -> dict:
+    """Encode jsonl corpora to uint16 memmap bins (V<65k) + meta.json with tokenizer field."""
+    if tokenizer.vocab_size > int(np.iinfo(BINS_DTYPE).max):
+        raise ValueError(f"vocab {tokenizer.vocab_size} exceeds uint16 range")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    total = 0
+    chunks: list[np.ndarray] = []
+    for path in files:
+        for text in load_texts_from_file(path):
+            ids = tokenizer.encode(text)
+            chunks.append(np.asarray(ids, dtype=BINS_DTYPE))
+            total += len(ids)
+    if total == 0:
+        raise ValueError(f"no tokens encoded from {[str(p) for p in files]}")
+    flat = np.concatenate(chunks)
+    mmap = np.memmap(out_dir / "train.bin", dtype=BINS_DTYPE, mode="w+", shape=flat.shape)
+    mmap[:] = flat
+    mmap.flush()
+    meta = {
+        "tokenizer": {"name": name, "vocab": tokenizer.vocab_size, "fertility": None},
+        "bins_dtype": "uint16",
+        "total_tokens": int(total),
+        "num_files": len(files),
+    }
+    (out_dir / "meta.json").write_text(json.dumps(meta, indent=2), encoding="utf-8")
+    return meta
+
+
+def load_bins(
+    bins_dir: Path, tokenizer: BPETokenizer | None = None
+) -> tuple[torch.Tensor, dict]:
+    """Load uint16 bins. Warns on tokenizer name/vocab mismatch vs meta.json."""
+    meta = json.loads((bins_dir / "meta.json").read_text(encoding="utf-8"))
+    if meta.get("bins_dtype") != "uint16":
+        raise ValueError(f"expected uint16 bins, meta says {meta.get('bins_dtype')!r}")
+    if tokenizer is not None:
+        saved = meta.get("tokenizer", {})
+        if saved.get("vocab") not in (None, tokenizer.vocab_size):
+            warnings.warn(
+                f"tokenizer mismatch: bins built with vocab={saved.get('vocab')} "
+                f"({saved.get('name')!r}), loading with vocab={tokenizer.vocab_size}",
+                UserWarning,
+                stacklevel=2,
+            )
+    flat = np.memmap(bins_dir / "train.bin", dtype=BINS_DTYPE, mode="r")
+    return torch.from_numpy(np.asarray(flat, dtype=np.int64)), meta

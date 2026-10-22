@@ -4,7 +4,25 @@ device = "auto"
 
 [data]
 path = "data/sample.jsonl"
-val_ratio = 0.1
+val_ratio = 0.02
+
+# T2 mix lock: full-3T cluster profile (ID 15 / EN 52 / code 15 / math 10 / synth 7 + 1 SFT).
+[data.mix]
+id_web = 0.15
+en_web = 0.52
+code = 0.15
+math = 0.10
+synthetic = 0.07
+instruction = 0.01
+
+# T2 mix lock: Spark-full ~1T profile (ID-heavy 30% over 1T = 300B vs ~150B unique).
+[data.mix_spark]
+id_web = 0.30
+en_web = 0.35
+code = 0.15
+math = 0.12
+synthetic = 0.07
+instruction = 0.01
 
 [model]
 n_embd = 960

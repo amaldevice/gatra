@@ -22,11 +22,23 @@ class DataConfig:
     val_ratio: float = 0.1
     shuffle_docs: bool = True
     doc_separator: str = "\n"
+    mix: dict[str, float] = field(default_factory=dict)
+    mix_spark: dict[str, float] = field(default_factory=dict)
 
     def sources(self) -> list[str]:
         if self.paths:
             return list(self.paths)
         return [self.path] if self.path else []
+
+    def validate_mix(self, profile: str = "mix") -> dict[str, float]:
+        """Mix weights (from [data.mix] / [data.mix_spark]) must sum to 1.0."""
+        weights = self.mix if profile == "mix" else self.mix_spark
+        if not weights:
+            return {}
+        total = sum(weights.values())
+        if abs(total - 1.0) > 1e-6:
+            raise ValueError(f"[data.{profile}] weights sum to {total:.6f}, must sum to 1.0")
+        return dict(weights)
 
 
 @dataclass
